@@ -4,25 +4,27 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
-	"github.com/viant/toolbox"
-	"github.com/viant/toolbox/storage"
-	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/viant/toolbox"
+	"github.com/viant/toolbox/storage"
+	"gopkg.in/yaml.v2"
 )
 
 //Resource represents a URL based resource, with enriched meta info
 type Resource struct {
-	URL             string            `description:"resource URL or relative or absolute path" required:"true"` //URL of resource
-	Credentials     string            `description:"credentials file"`                                          //name of credential file or credential key depending on implementation
-	ParsedURL       *url.URL          `json:"-"`                                                                //parsed URL resource
-	Cache           string            `description:"local cache path"`                                          //Cache path for the resource, if specified resource will be cached in the specified path
+	URL             string     `description:"resource URL or relative or absolute path" required:"true"` //URL of resource
+	Credentials     string     `description:"credentials file"`                                          //name of credential file or credential key depending on implementation
+	ParsedURL       *url.URL   `json:"-"`                                                                //parsed URL resource
+	Cache           string     `description:"local cache path"`                                          //Cache path for the resource, if specified resource will be cached in the specified path
 	CustomKey       *AES256Key `description:" content encryption key"`
-	CacheExpiryMs   int               //CacheExpiryMs expiry time in ms
+	CacheExpiryMs   int        //CacheExpiryMs expiry time in ms
 	modificationTag int64
 	init            string
 }
@@ -319,7 +321,103 @@ func (r *Resource) HasChanged() (changed bool, err error) {
 	return changed, err
 }
 
-func normalizeURL(URL string) string {
+/*normalize Windows URL A/B/C/D/E/F to golang URL from net/url package (URI)
+Windows requirements https://docs.microsoft.com/en-us/windows/win32/search/url-formatting-requirements
+golang URI example file://d:/example/file.txt*/
+func normalizeWindowsURL(URL string) string {
+	/*URL version A file:///c:\test\example\ */
+	if matched, _ := regexp.MatchString(`^file:\/\/\/[a-zA-Z]:\\([^[<>:"\/\\|?*]]*\\*)*$`, URL); matched {
+		URL = strings.ReplaceAll(strings.Replace(URL, "file:///", toolbox.FileSchema, 1), `\`, "/")
+		//if strings.HasSuffix("/") URL=URL[1:len(URl)-1]
+		return URL
+	}
+	/*URL version B file:c:/test/example/ */
+	if matched, _ := regexp.MatchString(`^file:[a-zA-Z]:/([^[<>:"\/\\|?*]]*/*)*$`, URL); matched {
+		URL = strings.Replace(URL, "file:", toolbox.FileSchema, 1)
+		//if strings.HasSuffix("/") URL=URL[1:len(URl)-1]
+		return URL
+	}
+	/*URL version C c:\test\example\ */
+	if matched, _ := regexp.MatchString(`^[a-zA-Z]:\\([^[<>:"\/\\|?*]]*\\*)*$`, URL); matched {
+		URL = toolbox.FileSchema + strings.ReplaceAll(URL, `\`, "/")
+		//if strings.HasSuffix("/") URL=URL[1:len(URl)-1]
+		return URL
+	}
+	/*URL version D file:///\\server\share\ */
+	if matched, _ := regexp.MatchString(`^file:\/\/\/\\\\([^[<>:"\/\\|?*]]*\\*)*$`, URL); matched {
+		URL = strings.ReplaceAll(strings.Replace(URL, "file:///", toolbox.FileSchema, 1), `\`, "/")
+		//if strings.HasSuffix("/") URL=URL[1:len(URl)-1]
+		return URL
+	}
+	/*URL version E file://server/share/ */
+	if matched, _ := regexp.MatchString(`^file:\/\/([^[<>:"\/\\|?*]]*\/*)*$`, URL); matched {
+		URL = strings.Replace(URL, "file://", toolbox.FileSchema, 1)
+		//if strings.HasSuffix("/") URL=URL[1:len(URl)-1]
+		return URL
+	}
+	/*URL version F \\server\share\ */
+	if matched, _ := regexp.MatchString(`^\\\\([^[<>:"\/\\|?*]]*\\*)*$`, URL); matched {
+		URL = toolbox.FileSchema + strings.ReplaceAll(URL, `\`, "/")
+		//if strings.HasSuffix("/") URL=URL[1:len(URl)-1]
+		return URL
+	}
+	return URL
+}
+
+//validate URL by Windows requirements https://docs.microsoft.com/en-us/windows/win32/search/url-formatting-requirements
+func validateWindowsUrl(URL string) bool {
+	/*URL version A file:///c:\test\example\ */
+	if matched, _ := regexp.MatchString(`^file:\/\/\/[a-zA-Z]:\\([^[<>:"\/\\|?*]]*\\*)*$`, URL); matched {
+		return matched
+	}
+	/*URL version B file:c:/test/example/ */
+	if matched, _ := regexp.MatchString(`^file:[a-zA-Z]:/([^[<>:"\/\\|?*]]*/*)*$`, URL); matched {
+		return matched
+	}
+	/*URL version C c:\test\example\ */
+	if matched, _ := regexp.MatchString(`^[a-zA-Z]:\\([^[<>:"\/\\|?*]]*\\*)*$`, URL); matched {
+		return matched
+	}
+	/*URL version D file:///\\server\share\ */
+	if matched, _ := regexp.MatchString(`^file:\/\/\/\\\\([^[<>:"\/\\|?*]]*\\*)*$`, URL); matched {
+		return matched
+	}
+	/*URL version E file://server/share/ */
+	if matched, _ := regexp.MatchString(`^file:\/\/([^[<>:"\/\\|?*]]*\/*)*$`, URL); matched {
+		return matched
+	}
+	/*URL version F \\server\share\ */
+	if matched, _ := regexp.MatchString(`^\\\\([^[<>:"\/\\|?*]]*\\*)*$`, URL); matched {
+		return matched
+	}
+	return false
+}
+
+/*normalize URL to Windows A Type Local URL example: file:///c:\test\example\ */
+/*func normalizeWindowsURL(URL string) string {
+	normalizedURL := URL
+	regex, _ := regexp.Compile(`^file:[\/\\]*`)
+	if prefixFile := regex.FindString(normalizedURL); prefixFile != "" {
+		strings.Replace(normalizedURL, prefixFile, "", 1)
+	}
+	strings.ReplaceAll(normalizedURL, "/", `\`)
+	if !strings.HasSuffix(normalizedURL, `\`) {
+		normalizedURL = normalizedURL //+ `\`
+	}
+	regex, _ = regexp.Compile(`^[a-zA-z]:\\`)
+	if driveString := regex.FindString(normalizedURL); driveString == "" {
+		driveLetter, _err := toolbox.GetAccesibleWindowsDriveString()
+		if _err == nil && len(driveLetter) > 0 {
+			normalizedURL = "file:///" + driveLetter + normalizedURL
+		} else {
+			normalizedURL = URL
+		}
+	}
+	return normalizedURL
+}*/
+
+//normalize URL HTTP - for backward compatibility
+func normalizeHttpURL(URL string) string {
 	if strings.Contains(URL, "://") {
 		var protoPosition = strings.Index(URL, "://")
 		if protoPosition != -1 {
@@ -327,8 +425,16 @@ func normalizeURL(URL string) string {
 			urlSuffix = strings.Replace(urlSuffix, "//", "/", len(urlSuffix))
 			URL = string(URL[:protoPosition+3]) + urlSuffix
 		}
-		return URL
 	}
+	return URL
+}
+
+func validateMacOsUrl(URL string) bool {
+	return false //TODO
+}
+
+//normalize URL Mac Os - for backward compatibility
+func normalizeMacOsURL(URL string) string {
 	if !strings.HasPrefix(URL, "/") {
 		currentDirectory, _ := os.Getwd()
 
@@ -351,7 +457,7 @@ func normalizeURL(URL string) string {
 				}
 				break
 			}
-			return toolbox.FileSchema + path.Join(currentDirectory, strings.Join(fragments[index:], "/"))
+			return path.Join(currentDirectory, strings.Join(fragments[index:], "/"))
 		}
 
 		currentDirectory, err := os.Getwd()
@@ -360,7 +466,45 @@ func normalizeURL(URL string) string {
 			URL = candidate
 		}
 	}
-	return toolbox.FileSchema + URL
+	return URL
+}
+
+func validateLinuxUrl(URL string) bool {
+	return false //TODO
+}
+
+func normalizeLinuxURL(URL string) string {
+	return URL //TODO
+}
+
+//normalize URL HTTP/OS
+func normalizeURL(URL string) string {
+	FileSchema := "file://"
+	if strings.HasPrefix(URL, "http") {
+		return normalizeHttpURL(URL)
+	}
+
+	if toolbox.IsWindows() {
+		return normalizeWindowsURL(URL)
+	}
+
+	if toolbox.IsLinux() {
+		if !validateLinuxUrl(URL) {
+			return FileSchema + normalizeLinuxURL(URL)
+		} else {
+			return FileSchema + URL
+		}
+	}
+
+	if toolbox.IsMacOs() {
+		if !validateMacOsUrl(URL) {
+			return FileSchema + normalizeMacOsURL(URL)
+		} else {
+			return FileSchema + URL
+		}
+	}
+
+	return FileSchema + URL
 }
 
 func (r *Resource) Init() (err error) {
